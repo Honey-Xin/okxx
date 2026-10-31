@@ -23,7 +23,8 @@ $src = "D:\dshwork"
 $skill = "C:\Users\Honey\.dsh\skills\crypto-quant"
 
 $excludeDirs = @("state", "data", "models", "__pycache__", "node_modules", ".git", ".pytest_cache")
-$excludeFiles = @("shot*.png", "preview.html")
+# 临时调试脚本不进仓库：_*.ps1 / dbg*.py / probe*.py 都是一次性排查用的
+$excludeFiles = @("shot*.png", "preview.html", "_*.ps1", "_*.py", "dbg*.py", "probe*.py")
 
 $pairs = @(
     @{ from = Join-Path $src "okx_quant";   to = Join-Path $dst "okx_quant" },

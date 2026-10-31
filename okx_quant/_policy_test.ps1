@@ -1,1 +1,0 @@
-﻿Write-Host "UNSIGNED-LOCAL-OK"
