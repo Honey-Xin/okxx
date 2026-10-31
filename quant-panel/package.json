@@ -1,0 +1,31 @@
+{
+  "name": "@local/quant-panel",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "AI Quant Monitor - a left-sidebar dashboard for the crypto funding-rate bot (OKX).",
+  "exports": {
+    ".": "./index.js",
+    "./client": "./client.js",
+    "./package.json": "./package.json"
+  },
+  "files": [
+    "index.js",
+    "client.js",
+    "cordis.patch.yml",
+    "icon.svg"
+  ],
+  "dsh": {
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    },
+    "client": {
+      "platform": "web",
+      "immediately": true,
+      "inject": [
+        "@deepseek-ai/dsh-client-ui-conversation"
+      ]
+    }
+  },
+  "icon": "./icon.svg"
+}

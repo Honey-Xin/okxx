@@ -1,0 +1,31 @@
+# 运行时状态：账户余额、持仓、审计日志、待定价队列、模型 prompt
+# 这些文件里有真实资金信息，绝不能进仓库
+**/state/
+
+# 本地数据与模型（可用脚本重新下载 / 训练）
+okx_quant/data/
+okx_quant/models/
+
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+.pytest_cache/
+
+# Node
+node_modules/
+
+# 预览构建产物（截图保留 panel*.png 作为文档图，其余是临时文件）
+quant-panel/preview/shot*.png
+quant-panel/preview/preview*.html
+
+# 密钥与本地配置
+.env
+set_env.ps1
+*.local.*
+
+# 系统
+.DS_Store
+Thumbs.db
+desktop.ini

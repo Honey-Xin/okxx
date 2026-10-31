@@ -1,0 +1,4 @@
+- insert:
+    - id: quant-panel
+      name: '@local/quant-panel'
+      config: {}
