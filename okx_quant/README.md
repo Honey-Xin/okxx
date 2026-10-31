@@ -166,10 +166,23 @@ python funding_arb_live.py close --coin RPL
 
 ---
 
-## 四、为什么用 Gate.io 而不是 OKX
+## 四、数据源与交易源
 
-本机对 okx.com 有 DNS 污染（解析到 169.254.0.2），OKX 所有接口都连不上。
-Gate.io 可以直连。策略本身跟交易所无关，换所只需要改 `EXCHANGE` 和符号格式。
+本机对 okx.com 有 DNS 污染（解析到 169.254.0.2），但**代理（`PROXY=http://127.0.0.1:7897`）打通后 OKX 可用**。
+
+现在的分工：
+
+| 用途 | 数据源 | 说明 |
+|---|---|---|
+| 训练 / 回测 | Gate.io 现货 | 4h 可回看约 4.5 年，`datafeed.load_bars()` |
+| 面板行情 / 实盘规则 | **OKX 永续** | `datafeed.load_okx_bars()`，与下单市场一致 |
+
+OKX K 线走原生 REST（`/api/v5/market/candles`）而不是 ccxt —— ccxt 每次进程启动都要
+`load_markets`（4600+ 市场，走代理约 18 秒），而面板每几秒轮询一次，付不起那个钱。
+REST 直连一次约 2 秒，带 5 分钟磁盘缓存命中后 0.06 秒。
+
+拉不到 OKX 时自动回退 Gate 缓存，此时面板卡片脚注会显示「Gate 现货」——
+看到这四个字就说明跨所价差可能影响止损价（主流币 <0.1%，小币可能 1~2%）。
 
 如果你以后能连上 OKX，`funding_arb_live.py` 里把 `ccxt.gate` 换成 `ccxt.okx`，
 符号改成 `COIN/USDT:USDT` 即可，其余逻辑不用动。

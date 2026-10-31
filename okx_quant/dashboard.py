@@ -76,18 +76,36 @@ def safe(name, fallback=None):
 
 
 # ---------------------------------------------------------------- 行情
-def market_block(quote=False):
-    """技术面来自本地 parquet 缓存，可选叠加 OKX 实时报价。"""
+def market_block(quote=False, coins=None):
+    """技术面：优先 OKX 永续 K 线（与下单市场一致），失败回退 Gate 现货缓存。
+
+    实时价不再走 ccxt —— ccxt 每次进程启动都要 load_markets（4600+ 市场，
+    走代理约 18 秒），而 OKX REST ticker 只要 0.2 秒。
+    """
+    watch = [str(c).upper() for c in (coins or WATCH) if str(c or "").strip()]
     rows = []
-    for coin in WATCH:
+    for coin in watch:
         pair = f"{coin}_USDT"
         item = {"coin": coin}
+        df = None
+        src = "okx"
         try:
-            df = datafeed.load_bars(pair=pair, interval=C.TIMEFRAME, verbose=False)
-            if df is None or df.empty:
-                item["error"] = "无本地数据"
+            df = datafeed.load_okx_bars(coin, C.TIMEFRAME, bars=300, ttl=300, verbose=False)
+        except Exception:
+            df = None
+        if df is None or getattr(df, "empty", True):
+            src = "gate"
+            try:
+                df = datafeed.load_bars(pair=pair, interval=C.TIMEFRAME, verbose=False)
+            except Exception as e:
+                item["error"] = f"{type(e).__name__}: {e}"
                 rows.append(item)
                 continue
+        if df is None or getattr(df, "empty", True):
+            item["error"] = "无数据"
+            rows.append(item)
+            continue
+        try:
             # build_features 只保留特征列，原始价格要在转换前取出
             close = float(df["close"].iloc[-1])
             bar_time = str(df.index[-1])
@@ -101,6 +119,7 @@ def market_block(quote=False):
             item.update(
                 price=round(close, 6),
                 bar_time=bar_time,
+                source=src,
                 ret_24h=round(float(last.get("ret_24", 0)) * 100, 2),
                 rsi14=round(float(last.get("rsi_14", 0)) * 100, 1),
                 atr_pct=round(float(last.get("atr_pct", 0)) * 100, 2),
@@ -113,24 +132,18 @@ def market_block(quote=False):
         rows.append(item)
 
     if quote:
-        try:
-            px = FL.PROXY
-            ex = FL.build_client("spot")
-            proxies = {"http": px, "https": px} if px else None
-            for item in rows:
-                if "price" not in item:
-                    continue
-                try:
-                    t = FL.retry_call(ex, "fetch_ticker", f"{item['coin']}/USDT")
-                    live = float(t["last"])
-                    item["live_price"] = round(live, 6)
-                    item["live_chg_pct"] = round(float(t.get("percentage") or 0), 2)
-                    item["price_lag_pct"] = round((live / item["price"] - 1) * 100, 2)
-                except Exception as e:
-                    item["quote_error"] = f"{type(e).__name__}"
-        except Exception as e:
-            for item in rows:
-                item.setdefault("quote_error", str(e)[:60])
+        for item in rows:
+            if "price" not in item:
+                continue
+            try:
+                t = datafeed.okx_ticker(item["coin"])
+                if t and t.get("last"):
+                    item["live_price"] = round(float(t["last"]), 6)
+                    item["live_chg_pct"] = round(float(t.get("chg_pct") or 0), 2)
+                    item["price_lag_pct"] = round((float(t["last"]) / item["price"] - 1) * 100, 3)
+                    item["live_source"] = "okx-swap"
+            except Exception as e:
+                item["quote_error"] = f"{type(e).__name__}"
     return rows
 
 
@@ -548,6 +561,7 @@ def watchlist_block():
         base.update({
             "price": snap.get("price"),
             "bar_time": snap.get("bar_time"),
+            "source": snap.get("source"),
             "rsi": snap.get("rsi"),
             "pos": snap.get("pos"),
             "pos_long": snap.get("pos_long"),
@@ -709,14 +723,15 @@ def strategy_block():
 
 # ---------------------------------------------------------------- 组装
 def build(quote=False, rescan=False):
-    market = safe("market", [])(lambda: market_block(quote=quote))
-    # watchlist 要先算：它决定了「行情判断」该分析哪几个币。
-    # 用户只交易 BTC 时，把 ETH/SOL 的分析一起塞进结论是噪音。
+    # watchlist 要先算：它决定了「行情判断」该分析哪几个币，
+    # 也决定了行情卡该拉哪几个币的 K 线。用户只交易 BTC 时，
+    # 把 ETH/SOL 的分析一起塞进结论是噪音，还平白多两次网络请求。
     watchlist = safe("watchlist", {"targets": [], "error": "unavailable"})(
         watchlist_block)
     coins = sorted({str(t.get("coin") or "").upper()
                     for t in (watchlist.get("targets") or [])
                     if t.get("coin")})
+    market = safe("market", [])(lambda: market_block(quote=quote, coins=coins or None))
     payload = {
         "as_of": now_iso(),
         "mode": {

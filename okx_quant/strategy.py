@@ -237,9 +237,10 @@ def _market_snapshot(coin, timeframe, with_spark=False):
     """拿某个币某个周期的 K 线与指标，供方向策略判断。
 
     返回的字典既给规则用（rsi/pos/vol_ratio/atr_pct），也原样塞进候选动作给 LLM 看。
-    数据源是本地 parquet 缓存，最多滞后一根 K 线。
 
-    with_spark 只在面板要画走势线时才开——60 个浮点数塞进 candidates.json 会白白变胖。
+    数据源优先 **OKX 永续**：面板和规则看到的必须是真正下单的那个市场。
+    以前用 Gate 现货 K 线，主流币差 0.1% 无所谓，小币能差 1~2%，止损价会算歪。
+    OKX 拉不到时回退 Gate（至少不会整块空掉）。
     """
     try:
         import datafeed as DF
@@ -248,10 +249,18 @@ def _market_snapshot(coin, timeframe, with_spark=False):
         return {"error": f"数据模块导入失败：{type(e).__name__}: {e}"}
 
     pair = f"{str(coin).upper()}_USDT"
+    df = None
+    source = "okx"
     try:
-        df = DF.load_bars(pair=pair, interval=timeframe, bars=300, verbose=False)
-    except Exception as e:
-        return {"error": f"取 K 线失败：{type(e).__name__}: {str(e)[:80]}"}
+        df = DF.load_okx_bars(str(coin).upper(), timeframe, bars=300, ttl=300, verbose=False)
+    except Exception:
+        df = None
+    if df is None or len(df) < 60:
+        source = "gate"
+        try:
+            df = DF.load_bars(pair=pair, interval=timeframe, bars=300, verbose=False)
+        except Exception as e:
+            return {"error": f"取 K 线失败：{type(e).__name__}: {str(e)[:80]}"}
     if df is None or len(df) < 60:
         return {"error": f"{pair} {timeframe} 数据不足（{0 if df is None else len(df)} 根）"}
 
@@ -277,6 +286,7 @@ def _market_snapshot(coin, timeframe, with_spark=False):
         "price": round(close, 6),
         "bar_time": str(df.index[-1]),
         "bars": len(df),
+        "source": source,
         "rsi": val("rsi_14", 100.0),
         "pos": val("pos_24", 100.0),
         "pos_long": val("pos_96", 100.0),
@@ -310,14 +320,24 @@ def pd_isna(v):
 
 
 def _load_df(coin, timeframe):
-    """按 (币, 周期) 缓存 K 线。同一轮评估里多套策略用同一份数据时不重复拉。"""
+    """按 (币, 周期) 缓存 K 线。同一轮评估里多套策略用同一份数据时不重复拉。
+
+    优先 OKX 永续（与下单市场一致），失败回退 Gate 现货。
+    模板最多回看 96 根，300 根足够，不必拉 1200 —— 多拉是纯浪费。
+    """
     key = "%s|%s" % (coin, timeframe)
     if key in _DF_CACHE:
         return _DF_CACHE[key]
+    df = None
     try:
-        df = DF.load_bars(pair=coin + "_USDT", interval=timeframe, bars=1200, verbose=False)
+        df = DF.load_okx_bars(str(coin).upper(), timeframe, bars=300, ttl=300, verbose=False)
     except Exception:
         df = None
+    if df is None or len(df) < 60:
+        try:
+            df = DF.load_bars(pair=coin + "_USDT", interval=timeframe, bars=300, verbose=False)
+        except Exception:
+            df = None
     _DF_CACHE[key] = df
     return df
 

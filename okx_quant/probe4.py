@@ -1,0 +1,15 @@
+﻿import requests, pandas as pd, numpy as np
+S=requests.Session(); S.headers.update({"User-Agent":"Mozilla/5.0"})
+r=S.get("https://api.gateio.ws/api/v4/futures/usdt/contracts",timeout=30)
+r.raise_for_status(); d=r.json()
+df=pd.DataFrame(d)
+print("合约总数", len(df))
+df["fr"]=pd.to_numeric(df["funding_rate"],errors="coerce")
+df["oi"]=pd.to_numeric(df.get("open_interest_usd",0),errors="coerce")
+sub=df[df["in_delisting"]==False].copy()
+sub=sub.sort_values("fr",ascending=False)
+cols=[c for c in ["name","funding_rate","funding_interval","open_interest_usd","last_price"] if c in sub.columns]
+print("\n=== 资金费率最高 20 ===")
+print(sub[cols].head(20).to_string(index=False))
+print("\n=== OI 最大 20（流动性最好）===")
+print(sub.sort_values("open_interest_usd",ascending=False)[cols].head(20).to_string(index=False))

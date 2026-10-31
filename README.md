@@ -91,7 +91,7 @@ python pattern_backtest.py --all # 跑完整回测，输出 reports/pattern_back
 python dashboard.py              # 生成 state/dashboard.json
 ```
 
-不需要任何 API key。数据走 Gate.io 公开接口。
+不需要任何 API key。K 线优先走 OKX 公开接口（`/api/v5/market/candles`，经本机代理），拉不到时回退 Gate.io 缓存。
 
 ### 接交易所（默认干跑）
 
@@ -131,7 +131,7 @@ node --check client.js
 
 ## 已知边界
 
-- **数据源与交易源不同**：K 线取自 Gate.io，交易在 OKX。主流币价差 <0.1%，小币可能 1~2%，止损价会算歪
+- **行情与交易已统一到 OKX 永续**：面板规则看到的 K 线和下单的市场是同一个。OKX 拉不到时回退 Gate 现货缓存，此时卡片脚注会明写「Gate 现货」——看到这四个字就说明跨所价差可能影响止损价
 - **不做自动唤醒 LLM**：面板的定时器是纯 Node 进程，启动不了 agent 会话。定价用规则引擎算，标成「待复核」，由人或 agent 复核
 - **滑点按固定 1.5bp 估**，没做盘口深度模拟
 - **涨绿跌红是硬编码**，因为主题变量没有涨跌语义色

@@ -907,7 +907,11 @@ window.__ModuleLoader__.load({
               h('span', null, '止盈 ≤' + num(lim.take_profit_pct, 1) + '%'),
               h('span', null, '置信度 ≥' + num(lim.min_confidence, 2)),
               h('span', { className: 'qp-target-age' + (stale ? ' qp-target-age-stale' : '') },
-                'K 线 ' + utcClock(t.bar_time) + (stale ? ' · 已 ' + Math.round(age) + ' 小时未更新' : '')),
+                // 数据源必须写在脸上：OKX 永续 = 与下单同一个市场，
+                // Gate 现货 = 回退（跨所价差会让止损价算歪）
+                (t.source === 'gate' ? 'Gate 现货' : (t.source === 'okx' ? 'OKX 永续' : '数据源未知')) +
+                ' · K 线 ' + utcClock(t.bar_time) +
+                (stale ? ' · 已 ' + Math.round(age) + ' 小时未更新' : '')),
             ),
           ),
       )

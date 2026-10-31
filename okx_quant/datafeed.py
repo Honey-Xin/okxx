@@ -1,11 +1,14 @@
 # -*- coding: utf-8 -*-
 """数据层：真实 K线抓取 + 本地 parquet 缓存。
 
-数据源选择理由：
-  本机 www.okx.com 被解析到 169.254.0.2（污染），BN/Bybit/KuCoin/Coinbase 同样不可达；
-  api.gateio.ws 直连 200。BTC/USDT 是同一全球标的，跨所价差在 bps 级，
-  所以用 Gate 的数据做训练与回测，用 OKX 做真实下单，两者成立。
+两个数据源，分工明确：
+  - **Gate.io**：长历史（4h 可回看约 4.5 年），用于训练与回测。
+  - **OKX 永续**：短历史（几百根），用于面板实时行情与实盘规则 ——
+    看的是哪个市场，就在哪个市场下单，止损价不会因为跨所价差算歪。
+
+本机 www.okx.com 的 DNS 被污染到 169.254.0.2，必须走本机代理（PROXY 环境变量）。
 """
+import os
 import time
 import requests
 import pandas as pd
@@ -154,6 +157,150 @@ def load_bars(pair=None, interval=None, bars=None, force=False, verbose=True):
     if verbose:
         print(f"已存 {path}  共 {len(df)} 根  {df.index[0]} ~ {df.index[-1]}")
     return df.tail(bars)
+
+
+# ---------------------------------------------------------------- OKX 行情
+# K 线原本取自 Gate.io 现货，但交易在 OKX 永续。两个市场的价格、影线、
+# 成交量都不一样 —— 主流币差 0.1%，小币能差 1~2%，止损价会算歪。
+# 这里加一条 OKX 永续直连，让面板和规则看到的行情与真正下单的市场一致。
+#
+# 刻意不用 ccxt：ccxt 每次进程启动都要 load_markets（4600+ 市场，走代理
+# 约 18 秒），而这里一个 GET 就够 —— 面板每 5 秒轮询一次，付不起那个钱。
+OKX_BASE = "https://www.okx.com"
+OKX_BAR = {"1m": "1m", "5m": "5m", "15m": "15m", "30m": "30m",
+           "1h": "1H", "4h": "4H", "1d": "1Dutc"}
+
+
+def _env(name, default=None):
+    """读环境变量。进程环境块可能是旧快照（DSH 先于 setup 脚本启动），
+    读不到就回退用户级注册表。"""
+    v = os.getenv(name)
+    if v:
+        return v
+    try:
+        import winreg
+
+        with winreg.OpenKey(winreg.HKEY_CURRENT_USER, "Environment") as k:
+            v, _ = winreg.QueryValueEx(k, name)
+        if v:
+            return v
+    except Exception:
+        pass
+    return default
+
+
+def okx_inst(coin, kind="SWAP"):
+    return f"{str(coin).upper()}-USDT-{kind}"
+
+
+_okx_sess = None
+
+
+def _okx_session():
+    s = requests.Session()
+    px = (_env("PROXY") or "").strip()
+    if px:
+        s.proxies.update({"http": px, "https": px})
+    s.headers.update({"User-Agent": "okx-quant/1.0"})
+    return s
+
+
+def _okx_get(path, params, retries=3, timeout=12):
+    global _okx_sess
+    if _okx_sess is None:
+        _okx_sess = _okx_session()
+    last = None
+    for i in range(retries):
+        try:
+            r = _okx_sess.get(OKX_BASE + path, params=params, timeout=timeout)
+            r.raise_for_status()
+            j = r.json()
+            if j.get("code") not in (None, "0"):
+                raise RuntimeError(j.get("msg") or "okx error")
+            return j.get("data") or []
+        except Exception as e:  # 代理有约 20% 瞬时失败率，重试比放弃划算
+            last = e
+            time.sleep(0.6 * (i + 1))
+    raise last
+
+
+def fetch_okx(coin, interval="4h", limit=300, verbose=False):
+    """OKX 永续 K 线。返回与 fetch_gateio 同结构：index=UTC，列 open/high/low/close/volume。"""
+    if interval not in OKX_BAR:
+        raise ValueError(f"不支持的周期: {interval}")
+    rows = _okx_get("/api/v5/market/candles",
+                    {"instId": okx_inst(coin), "bar": OKX_BAR[interval], "limit": int(limit)},
+                    retries=2, timeout=8)
+    if not rows:
+        return pd.DataFrame(columns=["open", "high", "low", "close", "volume"])
+    # OKX 返回 [ts, o, h, l, c, vol, volCcy, volCcyQuote, confirm]，且是**倒序**
+    df = pd.DataFrame(rows, columns=["ts", "open", "high", "low", "close",
+                                     "volume", "vol_ccy", "vol_ccy_q", "confirm"])
+    for c in ("open", "high", "low", "close", "volume"):
+        df[c] = pd.to_numeric(df[c], errors="coerce")
+    df["ts"] = pd.to_numeric(df["ts"], errors="coerce").astype("int64")
+    df = df.dropna(subset=["open", "high", "low", "close"]).sort_values("ts")
+    df.index = pd.to_datetime(df["ts"], unit="ms", utc=True)
+    if verbose:
+        print(f"OKX {okx_inst(coin)} {interval}: {len(df)} 根, "
+              f"{df.index[0]:%Y-%m-%d %H:%M} ~ {df.index[-1]:%Y-%m-%d %H:%M}")
+    return df[["open", "high", "low", "close", "volume"]]
+
+
+def okx_cache_path(coin, interval):
+    return C.DATA_DIR / f"okx_{str(coin).upper()}_{interval}.parquet"
+
+
+def load_okx_bars(coin, interval="4h", bars=300, ttl=300, force=False, verbose=False):
+    """带磁盘缓存的 OKX K 线。
+
+    ttl 秒内直接复用，因为 4h/1h 周期下一条 K 线在几十秒内不会变，
+    而面板 5 秒轮询一次 —— 不缓存等于每次轮询都打一次交易所接口。
+    """
+    path = okx_cache_path(coin, interval)
+    if path.exists() and not force:
+        try:
+            if time.time() - path.stat().st_mtime <= ttl:
+                old = pd.read_parquet(path)
+                if len(old) >= min(bars, 50):
+                    return old.tail(bars)
+        except Exception:
+            pass
+    try:
+        df = fetch_okx(coin, interval, limit=bars, verbose=verbose)
+        if len(df):
+            df.to_parquet(path)
+            return df
+    except Exception as e:
+        if verbose:
+            print(f"OKX K 线失败({e})，回退缓存")
+    if path.exists():
+        try:
+            return pd.read_parquet(path).tail(bars)
+        except Exception:
+            pass
+    return pd.DataFrame(columns=["open", "high", "low", "close", "volume"])
+
+
+def okx_ticker(coin, kind="SWAP"):
+    """实时成交价 + 24h 涨跌幅。一次 GET，约 0.2 秒。
+
+    timeout 压到 5 秒、只重试 2 次 —— 行情拿不到可以用 K 线收盘价顶住，
+    不值得为它把整轮 tick 拖到 30 秒（代理有约 20% 的瞬时失败率）。
+    """
+    d = _okx_get("/api/v5/market/ticker", {"instId": okx_inst(coin, kind)},
+                 retries=2, timeout=5)
+    if not d:
+        return None
+    t = d[0]
+    last = float(t.get("last") or 0)
+    o24 = float(t.get("open24h") or 0)
+    return {
+        "last": last,
+        "chg_pct": ((last / o24 - 1.0) * 100.0) if o24 else None,
+        "ts": int(t.get("ts") or 0),
+        "inst": okx_inst(coin, kind),
+    }
 
 
 if __name__ == "__main__":

@@ -368,7 +368,9 @@ async function tick() {
   try {
     const w0 = loadWatch()
     const scanFunding = w0.scan_funding === true
-    const args = ['tick.py', scanFunding ? '--scan' : '--skip-funding']
+    // --quote 每次都带：面板要的是实时价，一次 ticker 请求约 0.2 秒，
+    // 比让用户盯着一根 4 小时前的收盘价划算得多。
+    const args = ['tick.py', scanFunding ? '--scan' : '--skip-funding', '--quote']
 
     const r = await runPython(args, 300000)
     const errText = r.error || (r.stderr ? ('exit ' + r.code + ': ' + r.stderr) : ('exit ' + r.code))

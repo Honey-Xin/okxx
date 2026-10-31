@@ -273,7 +273,7 @@ const targetCard = (t) => {
     <span>止损 ≤${num(lim.stop_loss_pct, 1)}%</span>
     <span>止盈 ≤${num(lim.take_profit_pct, 1)}%</span>
     <span>置信度 ≥${num(lim.min_confidence, 2)}</span>
-    <span class="qp-target-age${stale ? ' qp-target-age-stale' : ''}">K 线 ${utcClock(t.bar_time)}${stale ? ' · 已 ' + Math.round(age) + ' 小时未更新' : ''}</span>
+    <span class="qp-target-age${stale ? ' qp-target-age-stale' : ''}">${t.source === 'gate' ? 'Gate 现货' : (t.source === 'okx' ? 'OKX 永续' : '数据源未知')} · K 线 ${utcClock(t.bar_time)}${stale ? ' · 已 ' + Math.round(age) + ' 小时未更新' : ''}</span>
   </div>
 </div>`
 }
