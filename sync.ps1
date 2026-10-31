@@ -23,7 +23,7 @@ $src = "D:\dshwork"
 $skill = "C:\Users\Honey\.dsh\skills\crypto-quant"
 
 $excludeDirs = @("state", "data", "models", "__pycache__", "node_modules", ".git", ".pytest_cache")
-# 临时调试脚本不进仓库：_*.ps1 / dbg*.py / probe*.py 都是一次性排查用的
+# Keep one-off debugging scripts out of the repo: _*.ps1 / dbg*.py / probe*.py
 $excludeFiles = @("shot*.png", "preview.html", "_*.ps1", "_*.py", "dbg*.py", "probe*.py")
 
 $pairs = @(
