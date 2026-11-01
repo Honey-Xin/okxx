@@ -238,9 +238,10 @@ def _market_snapshot(coin, timeframe, with_spark=False):
 
     返回的字典既给规则用（rsi/pos/vol_ratio/atr_pct），也原样塞进候选动作给 LLM 看。
 
-    数据源优先 **OKX 永续**：面板和规则看到的必须是真正下单的那个市场。
-    以前用 Gate 现货 K 线，主流币差 0.1% 无所谓，小币能差 1~2%，止损价会算歪。
-    OKX 拉不到时回退 Gate（至少不会整块空掉）。
+    数据源**只有 OKX 永续**：面板和规则看到的必须是真正下单的那个市场。
+    以前用 Gate 现货 K 线，主流币差 0.1% 无所谓，小币能差 1~2%，止损价会算歪；
+    后来改成「OKX 失败回退 Gate」，更糟 —— 拿 Gate 的价去算 OKX 的止损位，
+    表面有信号其实位置是错的。现在取不到就返回 error，宁可不给信号。
     """
     try:
         import datafeed as DF
@@ -249,20 +250,18 @@ def _market_snapshot(coin, timeframe, with_spark=False):
         return {"error": f"数据模块导入失败：{type(e).__name__}: {e}"}
 
     pair = f"{str(coin).upper()}_USDT"
-    df = None
+    # 只认 OKX。这里以前会在 OKX 失败时悄悄回退 Gate 现货，
+    # 结果是「用 Gate 的价格算止损、去 OKX 下单」——两个交易所永续差了
+    # 0.1%~0.5%，止损位就是错的。宁可不给信号，也不给错的价格。
     source = "okx"
     try:
         df = DF.load_okx_bars(str(coin).upper(), timeframe, bars=300, ttl=300, verbose=False)
-    except Exception:
-        df = None
+    except Exception as e:
+        return {"error": f"OKX K 线不可用：{type(e).__name__}: {str(e)[:80]}"}
     if df is None or len(df) < 60:
-        source = "gate"
-        try:
-            df = DF.load_bars(pair=pair, interval=timeframe, bars=300, verbose=False)
-        except Exception as e:
-            return {"error": f"取 K 线失败：{type(e).__name__}: {str(e)[:80]}"}
-    if df is None or len(df) < 60:
-        return {"error": f"{pair} {timeframe} 数据不足（{0 if df is None else len(df)} 根）"}
+        n = 0 if df is None else len(df)
+        return {"error": f"OKX {pair} {timeframe} 只有 {n} 根 K 线"
+                        f"（代理没开？OKX 需要 http://127.0.0.1:7897）"}
 
     close = float(df["close"].iloc[-1])
     try:
@@ -322,22 +321,19 @@ def pd_isna(v):
 def _load_df(coin, timeframe):
     """按 (币, 周期) 缓存 K 线。同一轮评估里多套策略用同一份数据时不重复拉。
 
-    优先 OKX 永续（与下单市场一致），失败回退 Gate 现货。
+    只用 OKX 永续（与下单市场一致），取不到返回 None，不回退 Gate。
     模板最多回看 96 根，300 根足够，不必拉 1200 —— 多拉是纯浪费。
     """
     key = "%s|%s" % (coin, timeframe)
     if key in _DF_CACHE:
         return _DF_CACHE[key]
-    df = None
+    # 同 _market_snapshot：只认 OKX，不回退 Gate
     try:
         df = DF.load_okx_bars(str(coin).upper(), timeframe, bars=300, ttl=300, verbose=False)
     except Exception:
         df = None
     if df is None or len(df) < 60:
-        try:
-            df = DF.load_bars(pair=coin + "_USDT", interval=timeframe, bars=300, verbose=False)
-        except Exception:
-            df = None
+        df = None
     _DF_CACHE[key] = df
     return df
 
@@ -623,6 +619,13 @@ def _account_positions(force=False):
             _ACCT_CACHE.update({"at": at, "data": cached})
     if not force and cached is not None and now - at < ACCT_TTL:
         return dict(cached)
+    if not DF.okx_alive():
+        # 代理没开时 build_client 会走 load_markets（几千个市场），
+        # 一轮盯盘能因此多花几十秒。先探测，不通就直接降级。
+        out = dict(cached) if cached is not None else {"positions": []}
+        out.update({"positions": out.get("positions") or [],
+                    "error": "OKX 不可达（代理未运行？）", "stale": True})
+        return out
 
     try:
         ex = FL.build_client("swap")

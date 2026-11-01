@@ -61,14 +61,20 @@ def main(argv=None):
     _run(steps, "evaluate", lambda: ST.evaluate_all(
         use_cache=not a.scan, skip_funding=a.skip_funding))
 
-    # 2. 任务书：把命中的候选整理成「给 DSH agent 看的题目」
+    # 2. 入队：把命中的候选写成 prompt 文件并进 pending 队列。
+    #    这一步不能省 —— build_task() 只读 pending.json，而 pending.json 是
+    #    prepare() 写的。少了它，任务书永远是「待定价 0 条」，
+    #    后面的定价也就永远没活干。
+    _run(steps, "enqueue", lambda: LT.prepare())
+
+    # 3. 任务书：把命中的候选整理成「给 DSH agent 看的题目」
     _run(steps, "task", lambda: LT.build_task())
 
-    # 3. 规则定价：先用 ATR/区间位置机械地算一版，标成待复核
+    # 4. 规则定价：先用 ATR/区间位置机械地算一版，标成待复核
     if not a.no_pricing:
         _run(steps, "auto", lambda: LT.run_auto())
 
-    # 4. 回写面板数据（dashboard.py 里所有块都在这把算完）
+    # 5. 回写面板数据（dashboard.py 里所有块都在这把算完）
     _run(steps, "dashboard", lambda: D.write(D.build(quote=a.quote, rescan=a.scan)))
 
     out = {

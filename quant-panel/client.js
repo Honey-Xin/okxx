@@ -1428,7 +1428,14 @@ window.__ModuleLoader__.load({
           ),
 
         h('div', { className: 'qp-row2' },
-          h(Card, { title: '账户与持仓' }, h(AccountCard, { a: data.account })),
+          h(Card, {
+            title: '账户与持仓',
+            // 余额读不到时必须写在卡头上，否则一堆旧数字看着像实时值
+            extra: (data.account && data.account.balance_error)
+              ? h('span', { className: 'qp-warn-text' },
+                (data.account.stale ? '上次读数 · ' : '') + data.account.balance_error)
+              : null,
+          }, h(AccountCard, { a: data.account })),
           h(Card, {
             title: '行情判断',
             extra: (() => {

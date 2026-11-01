@@ -539,7 +539,10 @@ def auto_price(action):
         tp = round(price * (1 - tp_pct / 100.0), 1)
 
     # 区间位置越极端，说明这笔越像"追尾"，仓位越小
-    pos = float(snap.get("range_position_96_pct") or 50.0)
+    # 注意字段名：这里是 strategy.py 给的 action["snapshot"]（pos_long/pos），
+    # 不是 build_messages 里那套 prompt 字段（range_position_96_pct）。
+    # 用错名字不会报错，只会静默 fallback 到 50.0，仓位系数就变成拍脑袋。
+    pos = float(snap.get("pos_long") or snap.get("pos") or 50.0)
     if side == "long":
         edge = pos / 100.0           # 越接近顶部越危险
     else:
@@ -547,8 +550,8 @@ def auto_price(action):
     size_mult = round(min(1.0, max(0.3, 1.0 - edge * 0.7)), 2)
 
     # 置信度：RSI 与方向配合、量能是否放大
-    rsi = float(snap.get("rsi14") or 50.0)
-    vol = float(snap.get("vol_ratio_24") or 1.0)
+    rsi = float(snap.get("rsi") or 50.0)
+    vol = float(snap.get("vol_ratio") or 1.0)
     conf = conf_min + 0.02
     if side == "short" and rsi > 55:
         conf += 0.03

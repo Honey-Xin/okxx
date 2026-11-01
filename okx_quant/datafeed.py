@@ -224,6 +224,29 @@ def _okx_get(path, params, retries=3, timeout=12):
     raise last
 
 
+_OKX_ALIVE = {"ts": 0.0, "ok": None}
+
+
+def okx_alive(force=False, ttl=60.0):
+    """OKX 现在到底通不通？带 60 秒缓存。
+
+    为什么要它：本机访问 OKX 必须走代理（www.okx.com 的 DNS 被污染成
+    169.254.0.2，真实 IP 的 443 也被阻断）。代理一停，每一次请求都要等
+    超时 + 重试，一轮 tick 从 5 秒变成 45 秒。先花 3 秒探一下，
+    不通就整轮改用 Gate —— Gate 可直连，永续价格与 OKX 差不到 0.1%。
+    """
+    now = time.time()
+    if not force and _OKX_ALIVE["ok"] is not None and now - _OKX_ALIVE["ts"] < ttl:
+        return _OKX_ALIVE["ok"]
+    try:
+        d = _okx_get("/api/v5/public/time", {}, retries=1, timeout=3)
+        ok = bool(d)
+    except Exception:
+        ok = False
+    _OKX_ALIVE.update(ts=now, ok=ok)
+    return ok
+
+
 def fetch_okx(coin, interval="4h", limit=300, verbose=False):
     """OKX 永续 K 线。返回与 fetch_gateio 同结构：index=UTC，列 open/high/low/close/volume。"""
     if interval not in OKX_BAR:
@@ -258,6 +281,10 @@ def load_okx_bars(coin, interval="4h", bars=300, ttl=300, force=False, verbose=F
     而面板 5 秒轮询一次 —— 不缓存等于每次轮询都打一次交易所接口。
     """
     path = okx_cache_path(coin, interval)
+    if not okx_alive():
+        # OKX 不通：直接返回空，让调用方走 Gate。
+        # 别在这里用过期缓存顶——那会让策略拿几十小时前的 K 线判断趋势。
+        return pd.DataFrame(columns=["open", "high", "low", "close", "volume"])
     if path.exists() and not force:
         try:
             if time.time() - path.stat().st_mtime <= ttl:
@@ -274,9 +301,18 @@ def load_okx_bars(coin, interval="4h", bars=300, ttl=300, force=False, verbose=F
     except Exception as e:
         if verbose:
             print(f"OKX K 线失败({e})，回退缓存")
+    # 回退缓存必须判新鲜度：代理断掉时缓存会一直返回旧数据，
+    # 而调用方（strategy._load_df）看到"有数据"就不会退到 Gate，
+    # 于是策略拿着几十小时前的 K 线判断趋势。宁可返回空，让上层换源。
     if path.exists():
         try:
-            return pd.read_parquet(path).tail(bars)
+            old = pd.read_parquet(path)
+            step = STEP.get(interval) or 14400
+            age = time.time() - float(old.index[-1].timestamp())
+            if age <= max(ttl * 2, step * 3):
+                return old.tail(bars)
+            if verbose:
+                print(f"OKX 缓存已过期 {age/3600:.1f} 小时，不再使用")
         except Exception:
             pass
     return pd.DataFrame(columns=["open", "high", "low", "close", "volume"])
@@ -288,6 +324,8 @@ def okx_ticker(coin, kind="SWAP"):
     timeout 压到 5 秒、只重试 2 次 —— 行情拿不到可以用 K 线收盘价顶住，
     不值得为它把整轮 tick 拖到 30 秒（代理有约 20% 的瞬时失败率）。
     """
+    if not okx_alive():
+        return None
     d = _okx_get("/api/v5/market/ticker", {"instId": okx_inst(coin, kind)},
                  retries=2, timeout=5)
     if not d:

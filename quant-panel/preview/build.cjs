@@ -231,6 +231,20 @@ const targetCard = (t) => {
   const age = t.bar_time ? ageHours(t.bar_time) : null
   const stale = age !== null && age > tfHours(t.timeframe) * 1.5
 
+  // 行情取不到时优先把原因说出来，别让人对着一个空卡片猜
+  if (t.error) {
+    return `<div class="qp-target">
+  <div class="qp-target-head">
+    <div>
+      <div class="qp-target-coin"><b>${esc(t.coin)}</b><span class="qp-target-tf">${esc(t.timeframe)}</span></div>
+      <div class="qp-target-names">${esc((t.strategy_names || []).join(' · '))}</div>
+    </div>
+    <div class="qp-target-price"><b>—</b><i>USDT</i></div>
+  </div>
+  <div class="qp-err">行情不可用：${esc(t.error)}</div>
+</div>`
+  }
+
   const groups = results
     .filter((r) => (t.strategy_ids || []).indexOf(r.strategy_id) >= 0 && r.state && (r.state.rules || []).length)
     .map((r) => r.state)
@@ -677,7 +691,7 @@ ${CSS}
 <body><div class="preview-frame qp-root">`
 
 const commonTail = `  <div class="qp-row2">
-    ${card('账户与持仓', '', account, false)}
+    ${card('账户与持仓', (acc.balance_error ? `<span class="qp-warn-text">${acc.stale ? '上次读数 · ' : ''}${esc(acc.balance_error)}</span>` : ''), account, false)}
     ${card('行情判断', '', decision, false)}
   </div>
   ${card('AI 复核', HAS_KEY ? (process.env.QUANT_MODEL || 'deepseek-chat') : ((st.auto && st.auto.awaiting) ? st.auto.awaiting + ' 条定价待复核' : '规则定价 + agent 复核'), llmCard, true)}

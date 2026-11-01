@@ -77,7 +77,7 @@ def safe(name, fallback=None):
 
 # ---------------------------------------------------------------- 行情
 def market_block(quote=False, coins=None):
-    """技术面：优先 OKX 永续 K 线（与下单市场一致），失败回退 Gate 现货缓存。
+    """技术面：只用 OKX 永续 K 线（与下单市场一致），取不到就报错，不回退。
 
     实时价不再走 ccxt —— ccxt 每次进程启动都要 load_markets（4600+ 市场，
     走代理约 18 秒），而 OKX REST ticker 只要 0.2 秒。
@@ -87,22 +87,17 @@ def market_block(quote=False, coins=None):
     for coin in watch:
         pair = f"{coin}_USDT"
         item = {"coin": coin}
-        df = None
+        # 只认 OKX。交易在 OKX 上，行情就必须是 OKX 的；
+        # 用 Gate 的价格去算 OKX 的止损位，等于拿错尺子量。
         src = "okx"
         try:
             df = datafeed.load_okx_bars(coin, C.TIMEFRAME, bars=300, ttl=300, verbose=False)
-        except Exception:
-            df = None
+        except Exception as e:
+            item["error"] = f"OKX K 线不可用：{type(e).__name__}: {str(e)[:80]}"
+            rows.append(item)
+            continue
         if df is None or getattr(df, "empty", True):
-            src = "gate"
-            try:
-                df = datafeed.load_bars(pair=pair, interval=C.TIMEFRAME, verbose=False)
-            except Exception as e:
-                item["error"] = f"{type(e).__name__}: {e}"
-                rows.append(item)
-                continue
-        if df is None or getattr(df, "empty", True):
-            item["error"] = "无数据"
+            item["error"] = "OKX 无数据（代理没开？需要 http://127.0.0.1:7897）"
             rows.append(item)
             continue
         try:
@@ -240,6 +235,16 @@ def _balance(force=False):
             _BAL_CACHE.update({"at": at, "data": cached})
     if not force and cached is not None and now - at < BAL_TTL:
         return dict(cached)
+    if not datafeed.okx_alive():
+        # OKX 不可达（代理没开）时不要硬等：一次 fetch_balance 在网络层
+        # 就要耗掉几秒到几十秒，而面板每 8 秒轮询一次，会连着排队。
+        msg = "OKX 不可达（代理未运行？）"
+        if cached is not None:
+            out = dict(cached)
+            out["balance_error"] = msg
+            out["stale"] = True
+            return out
+        return {"balance_error": msg}
     try:
         ex = FL.build_client("swap")
         old = getattr(ex, "timeout", None)
